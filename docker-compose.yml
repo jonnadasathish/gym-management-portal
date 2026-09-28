@@ -1,0 +1,112 @@
+services:
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-gymportal}
+      MYSQL_USER: ${DB_USER:-gymportal}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-gymportal}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpassword}
+    # No host port published — host already runs an unrelated MySQL/MariaDB
+    # container on 3306. This service is reachable from other compose
+    # services as `db:3306` over the internal compose network only.
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD:-rootpassword}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # No host port published — host already runs an unrelated Redis
+    # container on 6379. Reachable internally as `redis:6379`.
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    environment:
+      DJANGO_SETTINGS_MODULE: gymportal.settings.dev
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_NAME: ${DB_NAME:-gymportal}
+      DB_USER: ${DB_USER:-gymportal}
+      DB_PASSWORD: ${DB_PASSWORD:-gymportal}
+      REDIS_URL: redis://redis:6379/0
+      CORS_ALLOWED_ORIGINS: http://localhost:5173
+      DJANGO_DEBUG: "True"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  celery_worker:
+    build: ./backend
+    restart: unless-stopped
+    command: celery -A gymportal worker -l info
+    volumes:
+      - ./backend:/app
+    environment:
+      DJANGO_SETTINGS_MODULE: gymportal.settings.dev
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_NAME: ${DB_NAME:-gymportal}
+      DB_USER: ${DB_USER:-gymportal}
+      DB_PASSWORD: ${DB_PASSWORD:-gymportal}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  celery_beat:
+    build: ./backend
+    restart: unless-stopped
+    command: celery -A gymportal beat -l info
+    volumes:
+      - ./backend:/app
+    environment:
+      DJANGO_SETTINGS_MODULE: gymportal.settings.dev
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_NAME: ${DB_NAME:-gymportal}
+      DB_USER: ${DB_USER:-gymportal}
+      DB_PASSWORD: ${DB_PASSWORD:-gymportal}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    command: npm run dev -- --host 0.0.0.0
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000/api/v1
+    depends_on:
+      - backend
+
+volumes:
+  db_data:
